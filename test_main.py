@@ -1,4 +1,8 @@
-# test_main.py
+#Karan Kumar Sah
+#11777126
+#ks1466
+#Project 1: JWKS server
+#test_main.py
 import json
 import time
 import pytest
