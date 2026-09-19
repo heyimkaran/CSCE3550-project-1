@@ -1,4 +1,8 @@
-# main.py
+#Karan Kumar Sah
+#11777126
+#ks1466
+#Project 1: JWKS server
+#main.py
 import base64
 import time
 import uuid
