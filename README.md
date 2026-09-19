@@ -3,6 +3,8 @@
 A RESTful JSON Web Key Set (JWKS) server that generates and serves RSA public keys with unique identifiers (`kid`) for verifying JSON Web Tokens (JWTs), implements key expiration, and provides an authentication endpoint supporting the issuance of both valid and expired JWTs for verification and testing purposes.
 
 ---
+## Project Manager
+Karan Kumar Sah (ks1466)
 
 ## Features
 
