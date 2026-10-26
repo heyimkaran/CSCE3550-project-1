@@ -1,58 +1,28 @@
-"""
-JWKS Server with SQLite-backed Persistent Key Storage (Project 2).
-
-This module implements a RESTful JSON Web Key Set (JWKS) and authentication server
-using Flask and SQLite. RSA private keys are serialized in PKCS#1 PEM format and
-persisted in a local SQLite database (`totally_not_my_privateKeys.db`). All SQL
-interactions strictly use parameterized queries (`?` placeholders) to prevent
-SQL injection vulnerabilities.
-"""
-
-from __future__ import annotations
-
+# main.py
 import base64
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
-
+from flask import Flask, jsonify, request
+import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from flask import Flask, Response, jsonify, request
-import jwt
 
 app = Flask(__name__)
 
-# Default SQLite database filename as required by the project specification
 DB_FILE = "totally_not_my_privateKeys.db"
 
 
-def get_db_connection(db_path: str = DB_FILE) -> sqlite3.Connection:
-    """
-    Establishes and returns a connection to the SQLite database.
-
-    Args:
-        db_path: Path to the SQLite database file.
-
-    Returns:
-        sqlite3.Connection: Active SQLite connection object.
-    """
+def get_db_connection(db_path=DB_FILE):
+    """Opens and returns a connection to the SQLite database."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def init_db(db_path: str = DB_FILE) -> None:
-    """
-    Initializes the SQLite database and creates the `keys` table if it does not exist.
-    Also seeds the database with at least one expired key and one valid key (expiring
-    in 1 hour) so that POST /auth and GET /.well-known/jwks.json can be tested immediately.
-
-    Args:
-        db_path: Path to the SQLite database file.
-    """
+def init_db(db_path=DB_FILE):
+    """Creates the keys table if it does not exist and seeds initial keys."""
     with get_db_connection(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS keys(
                 kid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +33,6 @@ def init_db(db_path: str = DB_FILE) -> None:
         )
         conn.commit()
 
-    # Ensure at least one expired key and one valid key exist on startup
     current_time = int(time.time())
     if get_key_from_db(expired=True, db_path=db_path) is None:
         generate_and_store_key(exp_timestamp=current_time - 3600, db_path=db_path)
@@ -71,32 +40,15 @@ def init_db(db_path: str = DB_FILE) -> None:
         generate_and_store_key(exp_timestamp=current_time + 3600, db_path=db_path)
 
 
-def int_to_base64url(value: int) -> str:
-    """
-    Converts an integer to a Base64URL-encoded string without padding (RFC 7518).
-
-    Args:
-        value: The positive integer to encode (such as RSA modulus `n` or exponent `e`).
-
-    Returns:
-        str: Base64URL-encoded string representation.
-    """
+def int_to_base64url(value):
+    """Converts an integer to a Base64URL-encoded string with no padding."""
     byte_length = (value.bit_length() + 7) // 8 or 1
     value_bytes = value.to_bytes(byte_length, byteorder="big")
     return base64.urlsafe_b64encode(value_bytes).decode("utf-8").rstrip("=")
 
 
-def serialize_private_key(private_key: rsa.RSAPrivateKey) -> bytes:
-    """
-    Serializes an RSA private key to PKCS#1 (TraditionalOpenSSL) PEM bytes for storage
-    in the SQLite `BLOB` column.
-
-    Args:
-        private_key: The RSA private key instance to serialize.
-
-    Returns:
-        bytes: PEM-encoded PKCS#1 private key bytes.
-    """
+def serialize_private_key(private_key):
+    """Serializes an RSA private key to PKCS1 PEM format."""
     return private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.TraditionalOpenSSL,
@@ -104,42 +56,15 @@ def serialize_private_key(private_key: rsa.RSAPrivateKey) -> bytes:
     )
 
 
-def deserialize_private_key(pem_data: Union[bytes, str]) -> rsa.RSAPrivateKey:
-    """
-    Deserializes PKCS#1 PEM data stored in the database back into an RSA private key object.
-
-    Args:
-        pem_data: PEM-encoded private key as bytes or string from SQLite.
-
-    Returns:
-        rsa.RSAPrivateKey: Deserialized RSA private key object.
-    """
+def deserialize_private_key(pem_data):
+    """Deserializes PKCS1 PEM bytes or string back into an RSA private key."""
     if isinstance(pem_data, str):
-        pem_bytes = pem_data.encode("utf-8")
-    else:
-        pem_bytes = bytes(pem_data)
-    private_key = serialization.load_pem_private_key(pem_bytes, password=None)
-    return private_key
+        pem_data = pem_data.encode("utf-8")
+    return serialization.load_pem_private_key(bytes(pem_data), password=None)
 
 
-def generate_and_store_key(
-    exp_timestamp: Optional[int] = None,
-    expired: bool = False,
-    db_path: str = DB_FILE,
-) -> int:
-    """
-    Generates a 2048-bit RSA private key, serializes it to PKCS#1 PEM format,
-    and saves it to the SQLite database using a parameterized INSERT statement.
-
-    Args:
-        exp_timestamp: Optional explicit UNIX expiration timestamp.
-        expired: If True and `exp_timestamp` is not provided, sets expiry to 1 hour ago;
-                 otherwise sets expiry to 1 hour in the future.
-        db_path: Path to the SQLite database file.
-
-    Returns:
-        int: The auto-incremented `kid` assigned by SQLite.
-    """
+def generate_and_store_key(exp_timestamp=None, expired=False, db_path=DB_FILE):
+    """Generates a 2048-bit RSA private key and saves it to the SQLite database."""
     private_key = rsa.generate_private_key(
         public_exponent=65537,
         key_size=2048,
@@ -150,7 +75,6 @@ def generate_and_store_key(
         current_time = int(time.time())
         exp_timestamp = current_time - 3600 if expired else current_time + 3600
 
-    # Use parameterized query (?) to prevent SQL injection attacks
     with get_db_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -158,39 +82,22 @@ def generate_and_store_key(
             (pem_bytes, exp_timestamp),
         )
         conn.commit()
-        kid = int(cursor.lastrowid)
-
-    return kid
+        return cursor.lastrowid
 
 
-def get_key_from_db(
-    expired: bool = False,
-    db_path: str = DB_FILE,
-) -> Optional[Tuple[int, rsa.RSAPrivateKey, int]]:
-    """
-    Retrieves a single private key from the SQLite database matching the expiration state.
-    Uses parameterized SQL queries to prevent SQL injection vulnerabilities.
-
-    Args:
-        expired: When True, selects a key with `exp <= current_time`.
-                 When False, selects a key with `exp > current_time`.
-        db_path: Path to the SQLite database file.
-
-    Returns:
-        Optional[Tuple[int, rsa.RSAPrivateKey, int]]: Tuple of (kid, private_key, exp)
-        if found, or None if no matching key exists.
-    """
+def get_key_from_db(expired=False, db_path=DB_FILE):
+    """Reads a valid or expired private key from the database using query parameters."""
     current_time = int(time.time())
     with get_db_connection(db_path) as conn:
         cursor = conn.cursor()
         if expired:
             cursor.execute(
-                "SELECT kid, key, exp FROM keys WHERE exp <= ? ORDER BY kid DESC LIMIT 1",
+                "SELECT kid, key, exp FROM keys WHERE exp <= ? LIMIT 1",
                 (current_time,),
             )
         else:
             cursor.execute(
-                "SELECT kid, key, exp FROM keys WHERE exp > ? ORDER BY kid ASC LIMIT 1",
+                "SELECT kid, key, exp FROM keys WHERE exp > ? LIMIT 1",
                 (current_time,),
             )
         row = cursor.fetchone()
@@ -198,23 +105,11 @@ def get_key_from_db(
     if row is None:
         return None
 
-    private_key = deserialize_private_key(row["key"])
-    return int(row["kid"]), private_key, int(row["exp"])
+    return row["kid"], deserialize_private_key(row["key"]), row["exp"]
 
 
-def get_valid_keys_from_db(
-    db_path: str = DB_FILE,
-) -> List[Tuple[int, rsa.RSAPrivateKey, int]]:
-    """
-    Retrieves all valid (unexpired) private keys from the SQLite database using
-    a parameterized SELECT query.
-
-    Args:
-        db_path: Path to the SQLite database file.
-
-    Returns:
-        List[Tuple[int, rsa.RSAPrivateKey, int]]: List of (kid, private_key, exp) tuples.
-    """
+def get_valid_keys_from_db(db_path=DB_FILE):
+    """Reads all non-expired private keys from the database."""
     current_time = int(time.time())
     with get_db_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -224,40 +119,15 @@ def get_valid_keys_from_db(
         )
         rows = cursor.fetchall()
 
-    valid_keys: List[Tuple[int, rsa.RSAPrivateKey, int]] = []
-    for row in rows:
-        private_key = deserialize_private_key(row["key"])
-        valid_keys.append((int(row["kid"]), private_key, int(row["exp"])))
-
-    return valid_keys
-
-
-def extract_username_from_request() -> str:
-    """
-    Extracts the username from either HTTP Basic Auth or a JSON request payload,
-    falling back to 'userABC' for mock authentication.
-
-    Returns:
-        str: Authenticated (mocked) username string.
-    """
-    if request.authorization and request.authorization.username:
-        return str(request.authorization.username)
-
-    if request.is_json:
-        data = request.get_json(silent=True)
-        if isinstance(data, dict) and "username" in data:
-            return str(data["username"])
-
-    return "userABC"
+    return [
+        (row["kid"], deserialize_private_key(row["key"]), row["exp"])
+        for row in rows
+    ]
 
 
 @app.route("/auth", methods=["POST"])
-def auth() -> Tuple[Union[str, Response], int]:
-    """
-    Authenticates a mock user request (supporting both HTTP Basic Auth and JSON payloads)
-    and returns a signed JWT using a private key fetched from the SQLite database.
-    If the `expired` query parameter is present, signs the JWT using an expired key.
-    """
+def auth():
+    """Issues a signed JWT using a valid or expired key from the SQLite database."""
     is_expired = (
         "expired" in request.args
         and request.args.get("expired", "").lower() != "false"
@@ -271,13 +141,17 @@ def auth() -> Tuple[Union[str, Response], int]:
 
     kid, private_key, exp_timestamp = key_record
     pem_private_key = serialize_private_key(private_key)
-    username = extract_username_from_request()
+
+    username = "userABC"
+    if request.authorization and request.authorization.username:
+        username = request.authorization.username
+    elif request.is_json:
+        body = request.get_json(silent=True) or {}
+        username = body.get("username", "userABC")
 
     headers = {"kid": str(kid)}
-    payload: Dict[str, Any] = {
+    payload = {
         "user": username,
-        "sub": username,
-        "iat": int(time.time()),
         "exp": exp_timestamp,
     }
 
@@ -286,15 +160,12 @@ def auth() -> Tuple[Union[str, Response], int]:
 
 
 @app.route("/.well-known/jwks.json", methods=["GET"])
-def jwks() -> Tuple[Response, int]:
-    """
-    Reads all non-expired private keys from the SQLite database and returns
-    their corresponding public keys in standard RFC 7517 JWKS format.
-    """
+def jwks():
+    """Serves all valid public keys in JWKS format."""
     db_path = app.config.get("DB_FILE", DB_FILE)
     valid_keys = get_valid_keys_from_db(db_path=db_path)
 
-    keys_list: List[Dict[str, str]] = []
+    keys = []
     for kid, private_key, _ in valid_keys:
         public_numbers = private_key.public_key().public_numbers()
         jwk = {
@@ -305,14 +176,13 @@ def jwks() -> Tuple[Response, int]:
             "n": int_to_base64url(public_numbers.n),
             "e": int_to_base64url(public_numbers.e),
         }
-        keys_list.append(jwk)
+        keys.append(jwk)
 
-    return jsonify({"keys": keys_list}), 200
+    return jsonify({"keys": keys}), 200
 
 
-# Initialize database and seed keys when module is loaded
 init_db(DB_FILE)
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=8080)
+    app.run(port=8080)
